@@ -1,14 +1,10 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 '''
 Parse a MAVLink protocol XML file and generate a Java implementation
 
 Copyright Andrew Tridgell 2011
 Released under GNU GPL version 3 or later
 '''
-from __future__ import print_function
-
-from builtins import range
-from builtins import object
 
 import os
 from . import mavparse, mavtemplate
@@ -20,7 +16,7 @@ def generate_enums(basename, xml):
     directory = os.path.join(basename, '''enums''')
     mavparse.mkdir_p(directory)
     for en in xml.enum:
-        f = open(os.path.join(directory, en.name+".java"), mode='w')
+        f = open(os.path.join(directory, en.name+".java"), mode='w', encoding='utf-8')
         t.write(f, '''
 /* AUTO-GENERATED FILE.  DO NOT MODIFY.
  *
@@ -30,14 +26,24 @@ def generate_enums(basename, xml):
 
 package com.MAVLink.enums;
 
-/** 
+/**
  * ${description}
  */
 public class ${name} {
-${{entry:   public static final int ${name} = ${value}; /* ${description} |${{param:${description}| }} */
-}}
-}
-            ''', en)
+''', en)
+
+        for entry in en.entry:
+            if entry.value > 2147483647:
+                t.write(f, '''
+   public static final long ${name} = ${value}L; /* ${description} |${{param:${description}| }} */
+''', entry)
+            else:
+                t.write(f, '''
+   public static final int ${name} = ${value}; /* ${description} |${{param:${description}| }} */
+''', entry)
+
+        t.write(f, '''
+}''')
         f.close()
 
 
@@ -47,8 +53,8 @@ def generate_CRC(directory, xml):
     xml.message_crcs_array = ''
     for msgid, crc in sorted(xml.message_crcs.items()):
         xml.message_crcs_array += 'MAVLINK_MESSAGE_CRCS.put(%u, %u);\n        ' % (msgid, crc)
-    
-    f = open(os.path.join(directory, "CRC.java"), mode='w')
+
+    f = open(os.path.join(directory, "CRC.java"), mode='w', encoding='utf-8')
     t.write(f,'''
 /* AUTO-GENERATED FILE.  DO NOT MODIFY.
  *
@@ -128,13 +134,13 @@ public class CRC {
 
 }
         ''',xml)
-    
+
     f.close()
 
 
 def generate_message_h(directory, m):
     '''generate per-message header for a XML file'''
-    f = open(os.path.join(directory, 'msg_%s.java' % m.name_lower), mode='w')
+    f = open(os.path.join(directory, 'msg_%s.java' % m.name_lower), mode='w', encoding='utf-8')
 
     (path_head, path_tail) = os.path.split(directory)
     if path_tail == "":
@@ -151,7 +157,9 @@ package com.MAVLink.%s;
 import com.MAVLink.MAVLinkPacket;
 import com.MAVLink.Messages.MAVLinkMessage;
 import com.MAVLink.Messages.MAVLinkPayload;
-        
+import com.MAVLink.Messages.Units;
+import com.MAVLink.Messages.Description;
+
 /**
  * ${description}
  */
@@ -161,10 +169,12 @@ public class msg_${name_lower} extends MAVLinkMessage {
     public static final int MAVLINK_MSG_LENGTH = ${wire_length};
     private static final long serialVersionUID = MAVLINK_MSG_ID_${name};
 
-    ${{ordered_fields:  
+    ${{ordered_fields:
     /**
      * ${description}
      */
+    @Description("${description}")
+    @Units("${units}")
     public ${type} ${name}${array_suffix};
     }}
 
@@ -178,7 +188,8 @@ public class msg_${name_lower} extends MAVLinkMessage {
         packet.sysid = sysid;
         packet.compid = compid;
         packet.msgid = MAVLINK_MSG_ID_${name};
-        
+        ${store_target}
+
         ${{base_fields:${packField}
         }}
         if (isMavlink2) {
@@ -196,7 +207,7 @@ public class msg_${name_lower} extends MAVLinkMessage {
     @Override
     public void unpack(MAVLinkPayload payload) {
         payload.resetIndex();
-        
+
         ${{base_fields:${unpackField}
         }}
         if (isMavlink2) {
@@ -211,7 +222,7 @@ public class msg_${name_lower} extends MAVLinkMessage {
     public msg_${name_lower}() {
         this.msgid = MAVLINK_MSG_ID_${name};
     }
-    
+
     /**
      * Constructor for a new message, initializes msgid and all payload variables
      */
@@ -221,11 +232,11 @@ public class msg_${name_lower} extends MAVLinkMessage {
         ${{ordered_fields:this.${name} = ${name};
         }}
     }
-    
+
     /**
      * Constructor for a new message, initializes everything
      */
-    public msg_${name_lower}(${{ordered_fields: ${type}${array_suffix_empty} ${name},}}, int sysid, int compid, boolean isMavlink2) {
+    public msg_${name_lower}(${{ordered_fields: ${type}${array_suffix_empty} ${name},}}, long sysid, int compid, boolean isMavlink2) {
         this.msgid = MAVLINK_MSG_ID_${name};
         this.sysid = sysid;
         this.compid = compid;
@@ -242,11 +253,12 @@ public class msg_${name_lower} extends MAVLinkMessage {
      */
     public msg_${name_lower}(MAVLinkPacket mavLinkPacket) {
         this.msgid = MAVLINK_MSG_ID_${name};
-        
+
         this.sysid = mavLinkPacket.sysid;
         this.compid = mavLinkPacket.compid;
         this.isMavlink2 = mavLinkPacket.isMavlink2;
         unpack(mavLinkPacket.payload);
+        ${restore_target}
     }
 
     ${{ordered_fields: ${getText} }}
@@ -257,7 +269,7 @@ public class msg_${name_lower} extends MAVLinkMessage {
     public String toString() {
         return "MAVLINK_MSG_ID_${name} - sysid:"+sysid+" compid:"+compid+${{ordered_fields:" ${name}:"+${name}+}}"";
     }
-    
+
     /**
      * Returns a human-readable string of the name of the message
      */
@@ -271,7 +283,7 @@ public class msg_${name_lower} extends MAVLinkMessage {
 
 
 def generate_MAVLinkMessage(directory, xml_list):
-    f = open(os.path.join(directory, "MAVLinkPacket.java"), mode='w')
+    f = open(os.path.join(directory, "MAVLinkPacket.java"), mode='w', encoding='utf-8')
 
     imports = []
 
@@ -287,7 +299,7 @@ def generate_MAVLinkMessage(directory, xml_list):
  * This class was automatically generated by the
  * java mavlink generator tool. It should not be modified by hand.
  */
-        
+
 package com.MAVLink;
 
 import java.io.Serializable;
@@ -305,7 +317,7 @@ ${importString}
  * MAVLink 1 Packet Format
  *
  * Byte Index  Content              Value       Explanation
- * 0            Packet start sign  v1.0: 0xFE   Indicates the start of a new packet.  (v0.9: 0x55; v1.0: 0xFE; v2.0 0xFD)
+ * 0            Packet start sign  v1.0: 0xFE   Indicates the start of a new packet.  (v1.0: 0xFE; v2.0 0xFD)
  * 1            Payload length      0 - 255     Indicates length of the following payload.
  * 2            Packet sequence     0 - 255     Each component counts up its send sequence. Allows to detect packet loss
  * 3            System ID           1 - 255     ID of the SENDING system. Allows to differentiate different MAVs on the same network.
@@ -322,7 +334,7 @@ ${importString}
  * MAVLink 2 Packet Format
  *
  * Byte Index     Content             Value              Explanation
- * 0              Packet start sign  v2.0: 0xFD          Indicates the start of a new packet.  (v0.9: 0x55; v1.0: 0xFE; v2.0 0xFD)
+ * 0              Packet start sign  v2.0: 0xFD          Indicates the start of a new packet.  (v1.0: 0xFE; v2.0 0xFD)
  * 1              Payload length      0 - 255            Indicates length of the following payload.
  * 2              Incompatible Flags  0 - 255            Flags that must be understood
  * 3              Compatible Flags    0 - 255            Flags that can be ignored if not understood
@@ -330,15 +342,13 @@ ${importString}
  * 5              System ID           1 - 255            ID of the SENDING system. Allows to differentiate different MAVs on the same network.
  * 6              Component ID        0 - 255            ID of the SENDING component. Allows to differentiate different components of the same system, e.g. the IMU and the autopilot.
  * 7 to 9         Message ID          0 - 16777216       ID of the message - the id defines what the payload means and how it should be correctly decoded.
- * 10             Target System ID    1 - 255            (OPTIONAL) ID of the TARGET system. Only used for point-to-point mode
- * 11             Target Component ID 0 - 255            (OPTIONAL) ID of the TARGET component. Only used for point-to-point mode
- * 12 to (n+12)   Payload             0 - 255            Data of the message, depends on the message id.
- * (n+13)to(n+14) Checksum (low byte, high byte)         CRC16/MCRF4XX hash, excluding packet start sign, so bytes 1..(n+6) Note: The checksum also includes MAVLINK_CRC_EXTRA (Number computed from message fields. Protects the packet from decoding a different version of the same packet but with different variables).
- * (n+15)to(n+27) Signature (typeid, timestamp, sha256)  (OPTIONAL) Signature which allows ensuring that the link is tamper-proof; 13 bytes containing typeid (1 byte), timestamp (6 bytes), and last 6 bytes of SHA256 hash
+ * The source field grows to four little-endian bytes when SYSID32 (0x02)
+ * is set. Component and message IDs follow it. TARGET32 (0x04) appends a
+ * four-byte little-endian destination after the message ID; the target
+ * component remains in the payload. Header lengths are 10, 13, 14 or 17.
+ * Payload follows the header, then two CRC bytes. SIGNED (0x01) appends a
+ * link ID, six-byte timestamp and the first six bytes of SHA256(key + packet).
  *
- * The signature is a combination of a typeid, timestamp, and SHA256 hash.
- * OPTIONAL fields mean that, if they are not used, they do not exist in the MAVLink frame at all. Typically target sysid and target compid are not used, and signature is only used if signing is set up between both ends.
- * 
  * @see <a href="https://mavlink.io">mavlink.io</a> for more documentation on the MAVLink protocol
  */
 public class MAVLinkPacket implements Serializable {
@@ -370,7 +380,7 @@ public class MAVLinkPacket implements Serializable {
      * ID of the SENDING system. Allows to differentiate different MAVs on the
      * same network.
      */
-    public int sysid;
+    public long sysid;
 
     /**
      * ID of the SENDING component. Allows to differentiate different components
@@ -413,6 +423,26 @@ public class MAVLinkPacket implements Serializable {
      * Flags that can be ignored if not understood
      */
     public int compatFlags;
+    public long targetSysid;
+    public byte[] signingKey;
+    public int signingLinkId;
+    public long signingTimestamp;
+
+    public int headerLength() {
+        return isMavlink2 ? 10 + ((incompatFlags & 2) != 0 ? 3 : 0) + ((incompatFlags & 4) != 0 ? 4 : 0) : 6;
+    }
+
+    public static byte[] signature(byte[] key, byte[] packet, int length) {
+        if (key == null || key.length != 32) throw new IllegalArgumentException("Signing key must have 32 bytes");
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            digest.update(key);
+            digest.update(packet, 0, length);
+            return java.util.Arrays.copyOf(digest.digest(), 6);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
 
     public MAVLinkPacket(int payloadLength) {
         this(payloadLength, false);
@@ -447,15 +477,21 @@ public class MAVLinkPacket implements Serializable {
             crc.update_checksum(incompatFlags);
             crc.update_checksum(compatFlags);
             crc.update_checksum(seq);
-            crc.update_checksum(sysid);
+            crc.update_checksum((int)sysid);
+            if ((incompatFlags & 2) != 0) {
+                for (int shift = 8; shift < 32; shift += 8) crc.update_checksum((int)(sysid >>> shift));
+            }
             crc.update_checksum(compid);
             crc.update_checksum(msgid);
             crc.update_checksum(msgid >>> 8);
             crc.update_checksum(msgid >>> 16);
+            if ((incompatFlags & 4) != 0) {
+                for (int shift = 0; shift < 32; shift += 8) crc.update_checksum((int)(targetSysid >>> shift));
+            }
         } else {
             crc.update_checksum(payloadSize);
             crc.update_checksum(seq);
-            crc.update_checksum(sysid);
+            crc.update_checksum((int)sysid);
             crc.update_checksum(compid);
             crc.update_checksum(msgid);
         }
@@ -481,26 +517,32 @@ public class MAVLinkPacket implements Serializable {
         }
         return length;
     }
-    
+
     /**
      * Encode this packet for transmission.
      *
      * @return Array with bytes to be transmitted
      */
     public byte[] encodePacket() {
+        if (sysid < 0 || sysid > 0xffffffffL || targetSysid < 0 || targetSysid > 0xffffffffL)
+            throw new IllegalArgumentException("System IDs must be uint32");
+        if (!isMavlink2 && (sysid > 255 || targetSysid > 255 || msgid > 255))
+            throw new IllegalArgumentException("Wide IDs require MAVLink2");
+        incompatFlags = isMavlink2 ? (sysid > 255 ? 2 : 0) | (targetSysid > 255 ? 4 : 0) | (signingKey != null ? 1 : 0) : 0;
+        final int signatureLength = (incompatFlags & 1) != 0 ? 13 : 0;
         final int bufLen;
         final int payloadSize;
-        
+
         if (isMavlink2) {
             payloadSize = mavTrimPayload(payload.payload.array());
-            bufLen = MAVLINK2_HEADER_LEN + payloadSize + 2;
+            bufLen = headerLength() + payloadSize + 2 + signatureLength;
         } else {
             payloadSize = payload.size();
             bufLen = MAVLINK1_HEADER_LEN + payloadSize + 2;
 
         }
         byte[] buffer = new byte[bufLen];
-        
+
         int i = 0;
         if (isMavlink2) {
             buffer[i++] = (byte) MAVLINK_STX_MAVLINK2;
@@ -509,10 +551,16 @@ public class MAVLinkPacket implements Serializable {
             buffer[i++] = (byte) compatFlags;
             buffer[i++] = (byte) seq;
             buffer[i++] = (byte) sysid;
+            if ((incompatFlags & 2) != 0) {
+                for (int shift = 8; shift < 32; shift += 8) buffer[i++] = (byte)(sysid >>> shift);
+            }
             buffer[i++] = (byte) compid;
             buffer[i++] = (byte) (msgid & 0XFF);
             buffer[i++] = (byte) ((msgid >>> 8) & 0XFF);
             buffer[i++] = (byte) ((msgid >>> 16) & 0XFF);
+            if ((incompatFlags & 4) != 0) {
+                for (int shift = 0; shift < 32; shift += 8) buffer[i++] = (byte)(targetSysid >>> shift);
+            }
         } else {
             buffer[i++] = (byte) MAVLINK_STX_MAVLINK1;
             buffer[i++] = (byte) payloadSize;
@@ -530,12 +578,21 @@ public class MAVLinkPacket implements Serializable {
         buffer[i++] = (byte) (crc.getLSB());
         buffer[i++] = (byte) (crc.getMSB());
 
+        if (signatureLength != 0) {
+            if (signingTimestamp < 0 || signingTimestamp >= (1L << 48))
+                throw new IllegalArgumentException("Signing timestamp must be uint48");
+            buffer[i++] = (byte)signingLinkId;
+            for (int shift = 0; shift < 48; shift += 8) buffer[i++] = (byte)(signingTimestamp >>> shift);
+            System.arraycopy(signature(signingKey, buffer, i), 0, buffer, i, 6);
+            signingTimestamp++;
+        }
+
         logv(String.format("encode: isMavlink2=%s msgid=%d", isMavlink2, msgid));
 
         return buffer;
     }
         ''', xml_list[0])
-    
+
     f.write('''
     /**
      * Unpack the data in this packet and return a MAVLink message
@@ -554,7 +611,7 @@ public class MAVLinkPacket implements Serializable {
     xml_msgs.sort(key=lambda msg: msg.id)
 
     for msg in xml_msgs:
-        t.write(f, ''' 
+        t.write(f, '''
             case msg_${name_lower}.MAVLINK_MSG_ID_${name}:
                 return  new msg_${name_lower}(this);
             ''',msg)
@@ -573,7 +630,8 @@ public class MAVLinkPacket implements Serializable {
 def copy_fixed_headers(directory, xml):
     '''copy the fixed protocol headers to the target directory'''
     import shutil
-    hlist = [ 'Parser.java', 'Messages/MAVLinkMessage.java', 'Messages/MAVLinkPayload.java', 'Messages/MAVLinkStats.java' ]
+    hlist = [ 'Parser.java', 'Messages/MAVLinkMessage.java', 'Messages/MAVLinkPayload.java', 'Messages/MAVLinkStats.java',
+              'Messages/Description.java', 'Messages/Units.java', 'Messages/UnitsEnum.java']
     basepath = os.path.dirname(os.path.realpath(__file__))
     srcpath = os.path.join(basepath, 'java/lib')
     print("Copying fixed headers")
@@ -610,46 +668,35 @@ def mavfmt(field, typeInfo=0):
         'int64_t'  : ('long', 'Long'),
         'uint64_t' : ('long', 'UnsignedLong'),
     }
-    
+
     return map[field.type][typeInfo]
 
 def generate_one(basename, xml):
     '''generate headers for one XML file'''
-    
+
     directory = os.path.join(basename, xml.basename)
-    
+
     print("Generating Java implementation in directory %s" % directory)
     mavparse.mkdir_p(directory)
-    
-    if xml.little_endian:
-        xml.mavlink_endian = "MAVLINK_LITTLE_ENDIAN"
-    else:
-        xml.mavlink_endian = "MAVLINK_BIG_ENDIAN"
-    
-    if xml.crc_extra:
-        xml.crc_extra_define = "1"
-    else:
-        xml.crc_extra_define = "0"
-    
-    if xml.sort_fields:
-        xml.aligned_fields_define = "1"
-    else:
-        xml.aligned_fields_define = "0"
-    
+
+    xml.mavlink_endian = "MAVLINK_LITTLE_ENDIAN"
+    xml.crc_extra_define = "1"
+    xml.aligned_fields_define = "1"
+
     # work out the included headers
     xml.include_list = []
     for i in xml.include:
         base = i[:-4]
         xml.include_list.append(mav_include(base))
-    
+
     # form message lengths array
     xml.message_lengths_array = ''
     for mlen in xml.message_lengths:
         xml.message_lengths_array += '%u, ' % mlen
     xml.message_lengths_array = xml.message_lengths_array[:-2]
-    
-    
-    
+
+
+
     # form message info array
     xml.message_info_array = ''
     for name in xml.message_names:
@@ -661,14 +708,11 @@ def generate_one(basename, xml):
             # feed the compiler a "filled" empty message
             xml.message_info_array += '{"EMPTY",0,{{"","",MAVLINK_TYPE_CHAR,0,0,0}}}, '
     xml.message_info_array = xml.message_info_array[:-2]
-    
+
     # add some extra field attributes for convenience with arrays
     for m in xml.message:
         m.msg_name = m.name
-        if xml.crc_extra:
-            m.crc_extra_arg = ", %s" % m.crc_extra
-        else:
-            m.crc_extra_arg = ""
+        m.crc_extra_arg = ", %s" % m.crc_extra
         for f in m.fields:
             if f.print_format is None:
                 f.c_print_format = 'NULL'
@@ -685,8 +729,8 @@ def generate_one(basename, xml):
                 f.array_const = 'const '
                 f.decode_left = ''
                 f.decode_right = 'm.%s' % (f.name)
-                
-                f.unpackField = ''' 
+
+                f.unpackField = '''
         for (int i = 0; i < this.%s.length; i++) {
             this.%s[i] = payload.get%s();
         }
@@ -759,7 +803,7 @@ def generate_one(basename, xml):
                     f.c_test_value = "%sLL" % f.test_value
                 else:
                     f.c_test_value = f.test_value
-    
+
     # cope with uint8_t_mavlink_version
     for m in xml.message:
         m.arg_fields = []
@@ -776,24 +820,42 @@ def generate_one(basename, xml):
                 f.putname = f.name
             else:
                 f.putname = f.const_value
-    
-    # fix types to java
+
     for m in xml.message:
         for f in m.ordered_fields:
+            # fix types to java
             f.type = mavfmt(f)
+            if f.is_target_system:
+                f.type = 'long'
+                f.packField = 'packet.payload.putUnsignedByte((short)(%s > 255 ? 255 : %s));' % (f.name, f.name)
+            # remove brackets in units
+            f.units = removeBrackets(f.units)
+            # Escape quotes in description
+            f.description = cleanText(f.description);
 
     # separate base fields from MAVLink 2 extended fields
     for m in xml.message:
+        target = next((f for f in m.fields if f.is_target_system), None)
+        m.store_target = 'packet.targetSysid = %s;' % target.name if target else ''
+        m.restore_target = ('if ((mavLinkPacket.incompatFlags & 4) != 0) this.%s = mavLinkPacket.targetSysid;'
+                            % target.name) if target else ''
         m.base_fields = m.ordered_fields[:m.extensions_start]
         m.extended_fields = []
         if m.extensions_start is not None:
             m.extended_fields = m.ordered_fields[m.extensions_start:]
-    
+
     generate_CRC(directory, xml)
-    
+
     for m in xml.message:
         generate_message_h(directory, m)
 
+def removeBrackets(text):
+    return text.replace("[","").replace("]","")
+
+def cleanText(text):
+    text = text.replace("\n"," ")
+    text = text.replace("\r"," ")
+    return text.replace("\"","'")
 
 def generate(basename, xml_list):
     '''generate complete MAVLink Java implemenation'''

@@ -1,9 +1,6 @@
 '''
 module for loading/saving sets of mavlink parameters
 '''
-from __future__ import print_function
-
-
 import fnmatch, math, time, struct
 from pymavlink import mavutil
 
@@ -48,13 +45,16 @@ class MAVParmDict(dict):
             else:
                 print("can't send %s of type %u" % (name, parm_type))
                 return False
-            vfloat, = struct.unpack(">f", vstr)
+            numeric_value, = struct.unpack(">f", vstr)
         else:
-            vfloat = float(value)
+            if isinstance(value, str) and value.lower().startswith('0x'):
+                numeric_value = int(value[2:], 16)
+            else:
+                numeric_value = float(value)
 
         while retries > 0 and not got_ack:
             retries -= 1
-            mav.param_set_send(name.upper(), vfloat, parm_type=parm_type)
+            mav.param_set_send(name.upper(), numeric_value, parm_type=parm_type)
             tstart = time.time()
             while time.time() - tstart < 1:
                 ack = mav.recv_match(type='PARAM_VALUE', blocking=False)
@@ -63,10 +63,10 @@ class MAVParmDict(dict):
                     continue
                 if str(name).upper() == str(ack.param_id).upper():
                     got_ack = True
-                    self.__setitem__(name, float(value))
+                    self.__setitem__(name, numeric_value)
                     break
         if not got_ack:
-            print("timeout setting %s to %f" % (name, vfloat))
+            print("timeout setting %s to %f" % (name, numeric_value))
             return False
         return True
 
@@ -100,8 +100,9 @@ class MAVParmDict(dict):
         count = 0
         changed = 0
         for line in f:
-            line = line.strip()
-            if not line or line[0] == "#":
+            # strip comments, which may be at the end of a line
+            line = line.split('#')[0].strip()
+            if not line:
                 continue
             line = line.replace(',',' ')
             a = line.split()
@@ -113,23 +114,29 @@ class MAVParmDict(dict):
                 continue
             if not fnmatch.fnmatch(a[0].upper(), wildcard.upper()):
                 continue
+            value = a[1].strip()
+            if isinstance(value, str) and value.lower().startswith('0x'):
+                numeric_value = int(value[2:], 16)
+            else:
+                numeric_value = float(value)
+
             if mav is not None:
                 if check:
                     if a[0] not in list(self.keys()):
                         print("Unknown parameter %s" % a[0])
                         continue
                     old_value = self.__getitem__(a[0])
-                    if math.fabs(old_value - float(a[1])) <= self.mindelta:
+                    if math.fabs(old_value - numeric_value) <= self.mindelta:
                         count += 1
                         continue
-                    if self.mavset(mav, a[0], a[1]):
-                        print("changed %s from %f to %f" % (a[0], old_value, float(a[1])))
+                    if self.mavset(mav, a[0], value):
+                        print("changed %s from %f to %f" % (a[0], old_value, numeric_value))
                 else:
-                    print("set %s to %f" % (a[0], float(a[1])))
-                    self.mavset(mav, a[0], a[1])
+                    print("set %s to %f" % (a[0], numeric_value))
+                    self.mavset(mav, a[0], value)
                 changed += 1
             else:
-                self.__setitem__(a[0], float(a[1]))
+                self.__setitem__(a[0], numeric_value)
             count += 1
         f.close()
         if mav is not None:
@@ -148,11 +155,37 @@ class MAVParmDict(dict):
             if fnmatch.fnmatch(str(p).upper(), wildcard.upper()):
                 self.show_param_value(str(p), "%f" % self.get(p))
 
-    def diff(self, filename, wildcard='*', use_excludes=True, use_tabs=False, show_only1=True, show_only2=True):
-        '''show differences with another parameter file'''
+    def diff(self, filename, wildcard='*', use_excludes=True, use_tabs=False, show_only1=True, show_only2=True,
+             header=False, value_info=None):
+        '''show differences with another parameter file. The first value column
+           comes from filename, the second from this parameter set.
+           value_info, if given, is a callable(name, value) returning a string
+           describing the meaning of the value, which is appended as a comment'''
         other = MAVParmDict()
         if not other.load(filename, use_excludes=use_excludes):
             return
+
+        def info(k, label, value):
+            '''return a comment fragment for the meaning of a value'''
+            if value_info is None:
+                return None
+            s = value_info(k, value)
+            if s is None:
+                return None
+            return "%s=%s" % (label, s)
+
+        def comment(*parts):
+            '''join value meanings into a trailing comment'''
+            parts = [p for p in parts if p is not None]
+            if not parts:
+                return ""
+            return " # %s" % " ".join(parts)
+
+        if header:
+            if use_tabs:
+                print("%s\t%s\t%s" % ("PARAMETER", "FILE1", "FILE2"))
+            else:
+                print("%-16.16s %12s %12s" % ("PARAMETER", "FILE1", "FILE2"))
         keys = sorted(list(set(self.keys()).union(set(other.keys()))))
         for k in keys:
             if not fnmatch.fnmatch(str(k).upper(), wildcard.upper()):
@@ -160,13 +193,15 @@ class MAVParmDict(dict):
             if not k in other:
                 value = float(self[k])
                 if show_only2:
-                    print("%-16.16s              %12.4f" % (k, value))
+                    print("%-16.16s              %12.4f%s" % (k, value, comment(info(k, "FILE2", value))))
             elif not k in self:
                 if show_only1:
-                    print("%-16.16s %12.4f" % (k, float(other[k])))
+                    value = float(other[k])
+                    print("%-16.16s %12.4f%s" % (k, value, comment(info(k, "FILE1", value))))
             elif abs(self[k] - other[k]) > self.mindelta:
                 value = float(self[k])
+                c = comment(info(k, "FILE1", float(other[k])), info(k, "FILE2", value))
                 if use_tabs:
-                    print("%s\t%.4f\t%.4f" % (k, other[k], value))
+                    print("%s\t%.4f\t%.4f%s" % (k, other[k], value, c))
                 else:
-                    print("%-16.16s %12.4f %12.4f" % (k, other[k], value))
+                    print("%-16.16s %12.4f %12.4f%s" % (k, other[k], value, c))
